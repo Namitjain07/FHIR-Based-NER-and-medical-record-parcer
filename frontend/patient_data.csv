@@ -1,0 +1,2 @@
+Patient_ID,Binary_ID,Medical_Report_ID,Name,Address,Medicines,Dosage,Refill,Image_Column,Prediction
+57,59,58,maria sharapova,"9 tennis court, new Russia, DC","Prednisone 20 mg, Lialda 2.4 gram","prednisone, taper 5mg every 3 days, finish in 2.5 weeks, lialda- take 2 pills every day for 1 month",2,patient_image1.jpg,benign

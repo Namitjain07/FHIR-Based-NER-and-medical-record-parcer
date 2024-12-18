@@ -1,0 +1,6 @@
+Test,Null Hypothesis (H0),Alternative Hypothesis (H1),Test Results,Interpretation
+T-Test,No difference in accuracy between models,One model performs better than the other,"p-value: [insert value]","If p-value < 0.05, reject H0, suggesting a significant difference in accuracy."
+Kruskal-Wallis Test,No difference in accuracy between models,One model performs better than the other,"p-value: [insert value]","If p-value < 0.05, reject H0, suggesting a significant difference in accuracy."
+ANOVA,No difference in accuracy between models,One model performs better than the other,"p-value: [insert value]","If p-value < 0.05, reject H0, indicating significant difference in model accuracy."
+Shapiro-Wilk Test,"The accuracy data follows a normal distribution","The accuracy data does not follow a normal distribution","p-value: [insert value]","If p-value < 0.05, reject H0, suggesting the data is not normally distributed."
+P-Test,No difference in accuracy between models,One model performs better than the other,"p-value: [insert value]","If p-value < 0.05, reject H0, indicating a significant difference in accuracy."
