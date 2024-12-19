@@ -1,5 +1,9 @@
 # Smart Healthcare: Prescription Parsing and Cancer Detection
 
+<p align="center">
+<img src="Project_Cycle of Smart Healthcare to Analyze Prescriptions and Predictions on Skin Cancer Images.jpeg?raw=true" alt="Smart Healthcare" width="500">
+</p>
+
 # Overview
 This project is an Smart healthcare system designed to:
 
