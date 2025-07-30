@@ -1,0 +1,993 @@
+import tkinter as tk
+from tkinter import ttk, messagebox
+import pandas as pd
+import normalization_functions  # Assumes this file contains the necessary normalization functions
+import os
+import subprocess
+
+# Define global variables
+sample_specific_factors = {}
+reference_samples_pqn = []
+reference_features = []
+
+
+def create_gui(file_path):
+    root = tk.Tk()
+    root.title("Normalization - Concentration Table")
+    root.geometry("800x800")
+
+    # Load the data
+    try:
+        df = pd.read_csv(file_path)
+    except FileNotFoundError:
+        messagebox.showerror("File Not Found", f"The file at {file_path} was not found.")
+        return
+
+    features = list(df.columns[1:])  # Assuming first column is the sample ID
+    samples = list(df.iloc[:, 0])  # Assuming first column contains sample IDs
+
+    # Styling
+    style = ttk.Style()
+    style.theme_use('clam')
+    style.configure('TButton', font=('Calibri', 12), padding=10)
+    style.configure('TLabel', font=('Calibri', 12), padding=10)
+
+    # Create a canvas and scrollbar for scrolling
+    container = ttk.Frame(root)
+    canvas = tk.Canvas(container)
+    scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+    scrollable_frame = ttk.Frame(canvas)
+
+    scrollable_frame.bind(
+        "<Configure>",
+        lambda e: canvas.configure(
+            scrollregion=canvas.bbox("all")
+        )
+    )
+
+    canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+    canvas.configure(yscrollcommand=scrollbar.set)
+
+    container.pack(fill="both", expand=True)
+    canvas.pack(side="left", fill="both", expand=True)
+    scrollbar.pack(side="right", fill="y")
+
+    # Normalization Overview
+    ttk.Label(scrollable_frame, text="Normalization Overview:", font=('Calibri', 14, 'bold')).grid(row=0, column=0,
+                                                                                                   columnspan=2,
+                                                                                                   padx=10, pady=10,
+                                                                                                   sticky='w')
+    ttk.Label(scrollable_frame,
+              text="Sample normalization is for general-purpose adjustment for systematic differences among samples.\n"
+                   "Data transformation applies a mathematical transformation on individual values.\n"
+                   "Data scaling adjusts each variable by a scaling factor based on the dispersion of the variable.",
+              font=('Calibri', 12)).grid(row=1, column=0, columnspan=2, padx=10, pady=5, sticky='w')
+
+    # Sample Normalization
+    ttk.Label(scrollable_frame, text="Sample Normalization:", font=('Calibri', 12, 'bold')).grid(row=2, column=0,
+                                                                                                 padx=10, pady=5,
+                                                                                                 sticky='w')
+    sample_norm_var = tk.StringVar(value="Normalization by sum")
+    sample_norm_options = [
+        "None", "Normalization by sum", "Normalization by median",
+        "Normalization by a reference sample (PQN)",
+        "Normalization by a pooled sample from group (group PQN)", "Normalization by reference feature",
+        "Quantile normalization", "Sample-specific normalization (i.e., weight, volume)"
+    ]
+    for i, option in enumerate(sample_norm_options):
+        ttk.Radiobutton(scrollable_frame, text=option, variable=sample_norm_var, value=option).grid(row=3 + i, column=0,
+                                                                                                    padx=10, sticky='w')
+
+    # Data Transformation
+    ttk.Label(scrollable_frame, text="Data Transformation:", font=('Calibri', 12, 'bold')).grid(row=2, column=1,
+                                                                                                padx=10, pady=5,
+                                                                                                sticky='w')
+    data_trans_var = tk.StringVar(value="Log transformation (base 10)")
+    data_trans_options = [
+        "None", "Log transformation (base 10)", "Square root transformation", "Cube root transformation"
+    ]
+    for i, option in enumerate(data_trans_options):
+        ttk.Radiobutton(scrollable_frame, text=option, variable=data_trans_var, value=option).grid(row=3 + i, column=1,
+                                                                                                   padx=10, sticky='w')
+
+    # Data Scaling
+    ttk.Label(scrollable_frame, text="Data Scaling:", font=('Calibri', 12, 'bold')).grid(row=7, column=1, padx=10,
+                                                                                         pady=5, sticky='w')
+    data_scaling_var = tk.StringVar(value="Auto scaling")
+    data_scaling_options = [
+        "None", "Mean centering", "Auto scaling", "Pareto scaling", "Range scaling"
+    ]
+    for i, option in enumerate(data_scaling_options):
+        ttk.Radiobutton(scrollable_frame, text=option, variable=data_scaling_var, value=option).grid(row=8 + i,
+                                                                                                     column=1, padx=10,
+                                                                                                     sticky='w')
+
+    # Buttons to open dialogs for specific inputs
+    ttk.Button(scrollable_frame, text="Specify Sample-specific Normalization Factors",
+               command=lambda: specify_sample_specific_factors(samples)).grid(row=13, column=0, columnspan=2, padx=10,
+                                                                              pady=5)
+    ttk.Button(scrollable_frame, text="Specify Reference Samples for PQN",
+               command=lambda: specify_reference_samples_pqn(samples)).grid(row=14, column=0, columnspan=2, padx=10,
+                                                                            pady=5)
+    ttk.Button(scrollable_frame, text="Specify Reference Features",
+               command=lambda: specify_reference_features(features)).grid(row=15, column=0, columnspan=2, padx=10,
+                                                                          pady=5)
+
+    # Buttons
+    ttk.Button(scrollable_frame, text="Normalize",
+               command=lambda: normalize_data(sample_norm_var.get(), data_trans_var.get(), data_scaling_var.get(),
+                                              file_path)).grid(row=16, column=0, columnspan=2, pady=20)
+    ttk.Button(scrollable_frame, text="View Sample View Result", command=lambda: view_sample_result(file_path)).grid(
+        row=17, column=0, columnspan=2, pady=10)
+    ttk.Button(scrollable_frame, text="View Feature View Result", command=lambda: view_feature_result(file_path)).grid(
+        row=18, column=0, columnspan=2, pady=10)
+    ttk.Button(scrollable_frame, text="Proceed", command=proceed).grid(row=19, column=0, columnspan=2, pady=10)
+
+    root.mainloop()
+
+
+def create_scrollable_top_window(title, elements_func, command_save):
+    top = tk.Toplevel()
+    top.title(title)
+    container = ttk.Frame(top)
+    canvas = tk.Canvas(container)
+    scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+    scrollable_frame = ttk.Frame(canvas)
+
+    scrollable_frame.bind(
+        "<Configure>",
+        lambda e: canvas.configure(
+            scrollregion=canvas.bbox("all")
+        )
+    )
+
+    canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+    canvas.configure(yscrollcommand=scrollbar.set)
+
+    container.pack(fill="both", expand=True)
+    canvas.pack(side="left", fill="both", expand=True)
+    scrollbar.pack(side="right", fill="y")
+
+    elements = elements_func(scrollable_frame)
+    ttk.Button(scrollable_frame, text="Save", command=command_save).grid(row=len(elements) + 1, column=0, columnspan=2,
+                                                                         padx=10, pady=10)
+
+
+def specify_sample_specific_factors(samples):
+    sample_entries = {}
+
+    def save_factors():
+        global sample_specific_factors
+        sample_specific_factors = {sample: float(entry.get()) for sample, entry in sample_entries.items()}
+        top.destroy()
+
+    def create_elements(scrollable_frame):
+        for i, sample in enumerate(samples):
+            ttk.Label(scrollable_frame, text=sample).grid(row=i + 1, column=0, padx=10, pady=5, sticky='w')
+            entry = ttk.Entry(scrollable_frame)
+            entry.insert(0, '1.0')
+            entry.grid(row=i + 1, column=1, padx=10, pady=5, sticky='w')
+            sample_entries[sample] = entry
+        return sample_entries
+
+    top = create_scrollable_top_window("Sample-specific Normalization Factors", create_elements, save_factors)
+
+
+def specify_reference_samples_pqn(samples):
+    reference_vars = {}
+
+    def save_samples():
+        global reference_samples_pqn
+        reference_samples_pqn = [sample for sample, var in reference_vars.items() if var.get()]
+        top.destroy()
+
+    def create_elements(scrollable_frame):
+        for i, sample in enumerate(samples):
+            var = tk.BooleanVar()
+            ttk.Checkbutton(scrollable_frame, text=sample, variable=var).grid(row=i + 1, column=0, padx=10, pady=5,
+                                                                              sticky='w')
+            reference_vars[sample] = var
+        return reference_vars
+
+    top = create_scrollable_top_window("Reference Samples for PQN", create_elements, save_samples)
+
+
+def specify_reference_features(features):
+    feature_vars = {}
+
+    def save_features():
+        global reference_features
+        reference_features = [feature for feature, var in feature_vars.items() if var.get()]
+        top.destroy()
+
+    def create_elements(scrollable_frame):
+        for i, feature in enumerate(features):
+            var = tk.BooleanVar()
+            ttk.Checkbutton(scrollable_frame, text=feature, variable=var).grid(row=i + 1, column=0, padx=10, pady=5,
+                                                                               sticky='w')
+            feature_vars[feature] = var
+        return feature_vars
+
+    top = create_scrollable_top_window("Reference Features", create_elements, save_features)
+
+
+def normalize_data(sample_norm_method, data_trans_method, data_scaling_method, file_path):
+    global sample_specific_factors, reference_samples_pqn, reference_features
+    normalization_functions.apply_normalization(file_path, sample_norm_method, data_trans_method, data_scaling_method,
+                                                sample_specific_factors, reference_samples_pqn, reference_features)
+    messagebox.showinfo("Normalization",
+                        f"Normalization completed with:\nSample Normalization: {sample_norm_method}\nData Transformation: {data_trans_method}\nData Scaling: {data_scaling_method}")
+
+
+def view_sample_result(file_path):
+    output_folder = "C:\\Users\\Kartik\\PycharmProjects\\ip_b_3\\normalisation result"
+    sample_view_file = os.path.join(output_folder, 'sample_view.png')
+    if os.path.exists(sample_view_file):
+        os.system(f'start {sample_view_file}')
+    else:
+        messagebox.showinfo("View Result", "Sample view normalization result file not found.")
+
+
+def view_feature_result(file_path):
+    output_folder = "C:\\Users\\Kartik\\PycharmProjects\\ip_b_3\\normalisation result"
+    feature_view_file = os.path.join(output_folder, 'feature_view.png')
+    if os.path.exists(feature_view_file):
+        os.system(f'start {feature_view_file}')
+    else:
+        messagebox.showinfo("View Result", "Feature view normalization result file not found.")
+
+
+def proceed():
+    # Use the normalized_data.csv file for further analysis
+    normalized_file_path = "C:\\Users\\Kartik\\PycharmProjects\\ip_b_3\\normalisation result\\normalized_data.csv"
+
+    if os.path.exists(normalized_file_path):
+        subprocess.Popen(["python", "C:\\Users\\Kartik\\PycharmProjects\\ip_b_3\\gui_3.py", normalized_file_path])
+        messagebox.showinfo("Proceed", "Proceeding to the next step.")
+    else:
+        messagebox.showerror("File Not Found",
+                             "Normalized data file not found. Please ensure normalization is completed successfully.")
+
+
+if __name__ == "__main__":
+    file_path = "C:\\Users\\Kartik\\Downloads\\human_cachexia_handled.csv"  # Change this to the path of your data file
+    create_gui(file_path)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import tkinter as tk
+from tkinter import ttk, messagebox
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import cross_val_predict, StratifiedKFold
+from sklearn.svm import SVC
+from sklearn.metrics import roc_curve, auc
+from sklearn.preprocessing import StandardScaler
+from sklearn.cross_decomposition import PLSRegression
+import os
+
+def perform_multivariate_roc_analysis(file_path, classification_method, feature_ranking_method, latent_variables):
+    df = pd.read_csv(file_path)
+    X = df.drop(columns=['Muscle loss'])
+    y = df['Muscle loss'].str.contains("cachexic").astype(int)
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    cv = StratifiedKFold(n_splits=10)
+
+    if classification_method == "Linear SVM":
+        classifier = SVC(kernel="linear", probability=True)
+        y_proba = cross_val_predict(classifier, X_scaled, y, cv=cv, method="predict_proba")[:, 1]
+    elif classification_method == "PLS-DA":
+        classifier = PLSRegression(n_components=latent_variables)
+        y_pred = cross_val_predict(classifier, X_scaled, y, cv=cv)
+        y_proba = y_pred[:, 0] if y_pred.ndim > 1 else y_pred  # PLSRegression doesn't have predict_proba, using predictions directly
+
+    fpr, tpr, _ = roc_curve(y, y_proba)
+    roc_auc = auc(fpr, tpr)
+
+    plt.figure(figsize=(8, 6))
+    plt.plot(fpr, tpr, color='b', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+    plt.plot([0, 1], [0, 1], color='gray', lw=2, linestyle='--')
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('Multivariate ROC Analysis')
+    plt.legend(loc='lower right')
+
+    output_path = os.path.join("C:\\Users\\Kartik\\PycharmProjects\\ip_b_3\\biomarker_results", "multivariate_roc_analysis.png")
+    plt.savefig(output_path)
+    plt.close()
+
+    return f"Multivariate ROC analysis performed with {classification_method}, {feature_ranking_method}, {latent_variables} latent variables. Plot saved to {output_path}"
+
+def multivariate_roc_analysis():
+    root = tk.Tk()
+    root.title("Multivariate ROC Analysis")
+    root.geometry("600x400")
+
+    def perform_analysis():
+        classification_method = classification_method_combobox.get()
+        feature_ranking_method = feature_ranking_method_combobox.get()
+        latent_variables = latent_variables_entry.get()
+
+        if not classification_method or not feature_ranking_method or not latent_variables:
+            messagebox.showerror("Error", "Please fill in all fields.")
+            return
+
+        try:
+            latent_variables = int(latent_variables)
+            result = perform_multivariate_roc_analysis(
+                "C:\\Users\\Kartik\\PycharmProjects\\ip_b_3\\normalisation result\\normalized_data.csv",
+                classification_method, feature_ranking_method, latent_variables)
+            messagebox.showinfo("Analysis Result", result)
+        except ValueError:
+            messagebox.showerror("Error", "Number of latent variables must be an integer.")
+
+    ttk.Label(root, text="Select a classification method:").grid(row=0, column=0, padx=10, pady=10, sticky='w')
+    classification_method_combobox = ttk.Combobox(root, values=["Linear SVM", "PLS-DA"])
+    classification_method_combobox.grid(row=0, column=1, padx=10, pady=10, sticky='w')
+
+    ttk.Label(root, text="Select a feature ranking method:").grid(row=1, column=0, padx=10, pady=10, sticky='w')
+    feature_ranking_method_combobox = ttk.Combobox(root, values=["SVM built-in", "Univariate", "PLS-DA built-in"])
+    feature_ranking_method_combobox.grid(row=1, column=1, padx=10, pady=10, sticky='w')
+
+    ttk.Label(root, text="Number of latent variables (PLS-DA only):").grid(row=2, column=0, padx=10, pady=10, sticky='w')
+    latent_variables_entry = ttk.Entry(root)
+    latent_variables_entry.grid(row=2, column=1, padx=10, pady=10, sticky='w')
+
+    ttk.Button(root, text="Submit", command=perform_analysis).grid(row=3, column=0, columnspan=2, pady=20)
+
+    root.mainloop()
+
+if __name__ == "__main__":
+    multivariate_roc_analysis()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    import tkinter as tk
+from tkinter import ttk, messagebox
+import pandas as pd
+import normalization_functions
+import os
+import subprocess
+
+#
+sample_specific_factors = {}
+reference_samples_pqn = []
+reference_features = []
+
+def create_gui(file_path):
+    root = tk.Tk()
+    root.title("Normalization - Concentration Table")
+    root.geometry("800x800")
+
+
+    try:
+        df = pd.read_csv(file_path)
+    except FileNotFoundError:
+        messagebox.showerror("File Not Found", f"The file at {file_path} was not found.")
+        return
+
+    features = list(df.columns[1:])  # Assuming first column is the sample ID
+    samples = list(df.iloc[:, 0])  # Assuming first column contains sample IDs
+
+
+    style = ttk.Style()
+    style.theme_use('clam')
+    style.configure('TButton', font=('Calibri', 12), padding=10)
+    style.configure('TLabel', font=('Calibri', 12), padding=10)
+
+    # Create a canvas and scrollbar for scrolling
+    container = ttk.Frame(root)
+    canvas = tk.Canvas(container)
+    scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+    scrollable_frame = ttk.Frame(canvas)
+
+    scrollable_frame.bind(
+        "<Configure>",
+        lambda e: canvas.configure(
+            scrollregion=canvas.bbox("all")
+        )
+    )
+
+    canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+    canvas.configure(yscrollcommand=scrollbar.set)
+
+    container.pack(fill="both", expand=True)
+    canvas.pack(side="left", fill="both", expand=True)
+    scrollbar.pack(side="right", fill="y")
+
+
+    ttk.Label(scrollable_frame, text="Normalization Overview:", font=('Calibri', 14, 'bold')).grid(row=0, column=0,
+                                                                                                   columnspan=2,
+                                                                                                   padx=10, pady=10,
+                                                                                                   sticky='w')
+    ttk.Label(scrollable_frame,
+              text="Sample normalization is for general-purpose adjustment for systematic differences among samples.\n"
+                   "Data transformation applies a mathematical transformation on individual values.\n"
+                   "Data scaling adjusts each variable by a scaling factor based on the dispersion of the variable.",
+              font=('Calibri', 12)).grid(row=1, column=0, columnspan=2, padx=10, pady=5, sticky='w')
+
+
+    ttk.Label(scrollable_frame, text="Sample Normalization:", font=('Calibri', 12, 'bold')).grid(row=2, column=0,
+                                                                                                 padx=10, pady=5,
+                                                                                                 sticky='w')
+    sample_norm_var = tk.StringVar(value="Normalization by sum")
+    sample_norm_options = [
+        "None", "Normalization by sum", "Normalization by median",
+        "Normalization by a reference sample (PQN)",
+        "Normalization by a pooled sample from group (group PQN)", "Normalization by reference feature",
+        "Quantile normalization", "Sample-specific normalization (i.e., weight, volume)"
+    ]
+    for i, option in enumerate(sample_norm_options):
+        ttk.Radiobutton(scrollable_frame, text=option, variable=sample_norm_var, value=option).grid(row=3 + i, column=0,
+                                                                                                    padx=10, sticky='w')
+
+
+    ttk.Label(scrollable_frame, text="Data Transformation:", font=('Calibri', 12, 'bold')).grid(row=2, column=1,
+                                                                                                padx=10, pady=5,
+                                                                                                sticky='w')
+    data_trans_var = tk.StringVar(value="Log transformation (base 10)")
+    data_trans_options = [
+        "None", "Log transformation (base 10)", "Square root transformation", "Cube root transformation"
+    ]
+    for i, option in enumerate(data_trans_options):
+        ttk.Radiobutton(scrollable_frame, text=option, variable=data_trans_var, value=option).grid(row=3 + i, column=1,
+                                                                                                   padx=10, sticky='w')
+
+
+    ttk.Label(scrollable_frame, text="Data Scaling:", font=('Calibri', 12, 'bold')).grid(row=7, column=1, padx=10,
+                                                                                         pady=5, sticky='w')
+    data_scaling_var = tk.StringVar(value="Auto scaling")
+    data_scaling_options = [
+        "None", "Mean centering", "Auto scaling", "Pareto scaling", "Range scaling"
+    ]
+    for i, option in enumerate(data_scaling_options):
+        ttk.Radiobutton(scrollable_frame, text=option, variable=data_scaling_var, value=option).grid(row=8 + i,
+                                                                                                     column=1, padx=10,
+                                                                                                     sticky='w')
+
+    ttk.Button(scrollable_frame, text="Specify Sample-specific Normalization Factors",
+               command=lambda: specify_sample_specific_factors(samples)).grid(row=13, column=0, columnspan=2, padx=10,
+                                                                              pady=5)
+    ttk.Button(scrollable_frame, text="Specify Reference Samples for PQN",
+               command=lambda: specify_reference_samples_pqn(samples)).grid(row=14, column=0, columnspan=2, padx=10,
+                                                                            pady=5)
+    ttk.Button(scrollable_frame, text="Specify Reference Features",
+               command=lambda: specify_reference_features(features)).grid(row=15, column=0, columnspan=2, padx=10,
+                                                                          pady=5)
+
+
+    ttk.Button(scrollable_frame, text="Normalize",
+               command=lambda: normalize_data(sample_norm_var.get(), data_trans_var.get(), data_scaling_var.get(),
+                                              file_path)).grid(row=16, column=0, columnspan=2, pady=20)
+    ttk.Button(scrollable_frame, text="View Sample View Result", command=lambda: view_sample_result(file_path)).grid(
+        row=17, column=0, columnspan=2, pady=10)
+    ttk.Button(scrollable_frame, text="View Feature View Result", command=lambda: view_feature_result(file_path)).grid(
+        row=18, column=0, columnspan=2, pady=10)
+    ttk.Button(scrollable_frame, text="Proceed", command=proceed).grid(row=19, column=0, columnspan=2, pady=10)
+
+    root.mainloop()
+
+
+def create_scrollable_top_window(title, elements_func, command_save):
+    top = tk.Toplevel()
+    top.title(title)
+    container = ttk.Frame(top)
+    canvas = tk.Canvas(container)
+    scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+    scrollable_frame = ttk.Frame(canvas)
+
+    scrollable_frame.bind(
+        "<Configure>",
+        lambda e: canvas.configure(
+            scrollregion=canvas.bbox("all")
+        )
+    )
+
+    canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+    canvas.configure(yscrollcommand=scrollbar.set)
+
+    container.pack(fill="both", expand=True)
+    canvas.pack(side="left", fill="both", expand=True)
+    scrollbar.pack(side="right", fill="y")
+
+    elements = elements_func(scrollable_frame)
+    ttk.Button(scrollable_frame, text="Save", command=command_save).grid(row=len(elements) + 1, column=0, columnspan=2,
+                                                                         padx=10, pady=10)
+
+
+def specify_sample_specific_factors(samples):
+    sample_entries = {}
+
+    def save_factors():
+        global sample_specific_factors
+        sample_specific_factors = {sample: float(entry.get()) for sample, entry in sample_entries.items()}
+        top.destroy()
+
+    def create_elements(scrollable_frame):
+        for i, sample in enumerate(samples):
+            ttk.Label(scrollable_frame, text=sample).grid(row=i + 1, column=0, padx=10, pady=5, sticky='w')
+            entry = ttk.Entry(scrollable_frame)
+            entry.insert(0, '1.0')
+            entry.grid(row=i + 1, column=1, padx=10, pady=5, sticky='w')
+            sample_entries[sample] = entry
+        return sample_entries
+
+    top = create_scrollable_top_window("Sample-specific Normalization Factors", create_elements, save_factors)
+
+
+def specify_reference_samples_pqn(samples):
+    reference_vars = {}
+
+    def save_samples():
+        global reference_samples_pqn
+        reference_samples_pqn = [sample for sample, var in reference_vars.items() if var.get()]
+        top.destroy()
+
+    def create_elements(scrollable_frame):
+        for i, sample in enumerate(samples):
+            var = tk.BooleanVar()
+            ttk.Checkbutton(scrollable_frame, text=sample, variable=var).grid(row=i + 1, column=0, padx=10, pady=5,
+                                                                              sticky='w')
+            reference_vars[sample] = var
+        return reference_vars
+
+    top = create_scrollable_top_window("Reference Samples for PQN", create_elements, save_samples)
+
+
+def specify_reference_features(features):
+    feature_vars = {}
+
+    def save_features():
+        global reference_features
+        reference_features = [feature for feature, var in feature_vars.items() if var.get()]
+        top.destroy()
+
+    def create_elements(scrollable_frame):
+        for i, feature in enumerate(features):
+            var = tk.BooleanVar()
+            ttk.Checkbutton(scrollable_frame, text=feature, variable=var).grid(row=i + 1, column=0, padx=10, pady=5,
+                                                                               sticky='w')
+            feature_vars[feature] = var
+        return feature_vars
+
+    top = create_scrollable_top_window("Reference Features", create_elements, save_features)
+
+
+def normalize_data(sample_norm_method, data_trans_method, data_scaling_method, file_path):
+    global sample_specific_factors, reference_samples_pqn, reference_features
+    normalization_functions.apply_normalization(file_path, sample_norm_method, data_trans_method, data_scaling_method,
+                                                sample_specific_factors, reference_samples_pqn, reference_features)
+    messagebox.showinfo("Normalization",
+                        f"Normalization completed with:\nSample Normalization: {sample_norm_method}\nData Transformation: {data_trans_method}\nData Scaling: {data_scaling_method}")
+
+
+def view_sample_result(file_path):
+    output_folder = "C:\\Users\\Kartik\\PycharmProjects\\ip_b_3\\normalisation result"
+    sample_view_file = os.path.join(output_folder, 'sample_view.png')
+    if os.path.exists(sample_view_file):
+        os.system(f'start {sample_view_file}')
+    else:
+        messagebox.showinfo("View Result", "Sample view normalization result file not found.")
+
+
+def view_feature_result(file_path):
+    output_folder = "C:\\Users\\Kartik\\PycharmProjects\\ip_b_3\\normalisation result"
+    feature_view_file = os.path.join(output_folder, 'feature_view.png')
+    if os.path.exists(feature_view_file):
+        os.system(f'start {feature_view_file}')
+    else:
+        messagebox.showinfo("View Result", "Feature view normalization result file not found.")
+
+
+def proceed():
+
+    normalized_file_path = "C:\\Users\\Kartik\\PycharmProjects\\ip_b_3\\normalisation result\\normalized_data.csv"
+
+    if os.path.exists(normalized_file_path):
+        subprocess.Popen(["python", "C:\\Users\\Kartik\\PycharmProjects\\ip_b_3\\gui_3.py", normalized_file_path])
+        messagebox.showinfo("Proceed", "Proceeding to the next step.")
+    else:
+        messagebox.showerror("File Not Found",
+                             "Normalized data file not found. Please ensure normalization is completed successfully.")
+
+
+if __name__ == "__main__":
+    file_path = "C:\\Users\\Kartik\\Downloads\\human_cachexia_handled.csv"  # Change this to the path of your data file
+    create_gui(file_path)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import tkinter as tk
+from tkinter import ttk, messagebox
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+import sys
+import subprocess
+
+
+def load_data(file_path):
+    df = pd.read_csv(file_path)
+    df = df.dropna()  # Drop rows with NaN values
+    return df
+
+
+def perform_pca(df):
+    df_scaled = StandardScaler().fit_transform(df)
+    pca = PCA(n_components=2)
+    principal_components = pca.fit_transform(df_scaled)
+    return principal_components, pca
+
+
+def plot_pca(df, principal_components, output_path):
+    plt.figure(figsize=(10, 7))
+    colors = df.index.to_series().astype(str).str.contains("cachexic").map({True: 'r', False: 'g'})
+    plt.scatter(principal_components[:, 0], principal_components[:, 1], c=colors)
+    plt.xlabel('Principal Component 1')
+    plt.ylabel('Principal Component 2')
+    plt.title('PCA - Normalized Data')
+    plt.savefig(output_path)
+    plt.close()
+
+
+def perform_roc_analysis(df, selected_feature):
+    from sklearn.metrics import roc_curve, auc
+
+    y_true = df['Muscle loss'].str.contains("cachexic").astype(int)
+    y_scores = df[selected_feature]
+
+    print("True labels (y_true):", y_true)
+    print("Scores (y_scores):", y_scores)
+
+    if y_true.sum() == 0 or y_true.sum() == len(y_true):
+        raise ValueError("No positive samples in y_true or no negative samples in y_true.")
+
+    fpr, tpr, thresholds = roc_curve(y_true, y_scores)
+    roc_auc = auc(fpr, tpr)
+    optimal_idx = np.argmax(tpr - fpr)
+    optimal_threshold = thresholds[optimal_idx]
+    return fpr, tpr, roc_auc, optimal_threshold, fpr[optimal_idx], tpr[optimal_idx]
+
+
+def plot_roc_and_box(df, selected_feature, output_path):
+    plt.figure(figsize=(14, 7))
+
+    ax1 = plt.subplot(121)
+    fpr, tpr, roc_auc, optimal_threshold, optimal_fpr, optimal_tpr = perform_roc_analysis(df, selected_feature)
+    ax1.plot(fpr, tpr, color='b', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+    ax1.plot([0, 1], [0, 1], color='gray', lw=2, linestyle='--')
+    ax1.scatter(optimal_fpr, optimal_tpr, color='red', s=100, label=f'Optimal Threshold ({optimal_threshold:.2f})')
+    ax1.set_xlabel('False Positive Rate')
+    ax1.set_ylabel('True Positive Rate')
+    ax1.set_title(f'Receiver Operating Characteristic (ROC) - {selected_feature}')
+    ax1.legend(loc='lower right')
+
+    ax2 = plt.subplot(122)
+    df['Group'] = np.where(df['Muscle loss'].str.contains("cachexic"), 'cachexic', 'control')
+    sns.boxplot(x='Group', y=selected_feature, data=df, ax=ax2)
+    sns.stripplot(x='Group', y=selected_feature, data=df, ax=ax2, color='black', jitter=0.2, size=3)
+    ax2.set_title(f'Boxplot - {selected_feature}')
+
+    plt.savefig(output_path)
+    plt.close()
+
+
+def analyze_and_plot_pca():
+    try:
+        normalized_file_path = file_path_entry.get()
+        df = load_data(normalized_file_path)
+        df_numeric = df.select_dtypes(include=[np.number])  # Select only numeric columns
+        principal_components, pca = perform_pca(df_numeric)
+        output_path = "C:\\Users\\Kartik\\PycharmProjects\\ip_b_3\\biomarker_results\\pca_plot.png"
+        plot_pca(df, principal_components, output_path)
+        messagebox.showinfo("PCA Analysis", f"PCA plot saved to {output_path}")
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
+
+
+def analyze_and_plot_roc():
+    try:
+        normalized_file_path = file_path_entry.get()
+        selected_feature = feature_combobox.get()
+        df = load_data(normalized_file_path)
+        output_path = f"C:\\Users\\Kartik\\PycharmProjects\\ip_b_3\\biomarker_results\\roc_{selected_feature}.png"
+        plot_roc_and_box(df, selected_feature, output_path)
+        messagebox.showinfo("ROC Analysis", f"ROC and box plot saved to {output_path}")
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
+
+
+def proceed_to_biomarker_2():
+    try:
+        subprocess.run(["python", "biomarker_2.py"])
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to launch biomarker_2.py: {str(e)}")
+
+
+def create_gui():
+    root = tk.Tk()
+    root.title("Biomarker Analysis")
+    root.geometry("600x400")
+
+    global file_path_entry, feature_combobox
+
+    ttk.Label(root, text="Select Data File:").grid(row=0, column=0, padx=10, pady=10, sticky='w')
+    file_path_entry = ttk.Entry(root, width=50)
+    file_path_entry.grid(row=0, column=1, padx=10, pady=10, sticky='w')
+    ttk.Button(root, text="Browse", command=browse_file).grid(row=0, column=2, padx=10, pady=10, sticky='w')
+
+    ttk.Label(root, text="Select Feature:").grid(row=1, column=0, padx=10, pady=10, sticky='w')
+    feature_combobox = ttk.Combobox(root)
+    feature_combobox.grid(row=1, column=1, padx=10, pady=10, sticky='w')
+
+    ttk.Button(root, text="Analyze and Plot PCA", command=analyze_and_plot_pca).grid(row=2, column=0, columnspan=3, pady=20)
+    ttk.Button(root, text="Analyze and Plot ROC", command=analyze_and_plot_roc).grid(row=3, column=0, columnspan=3, pady=20)
+    ttk.Button(root, text="Proceed to Biomarker 2", command=proceed_to_biomarker_2).grid(row=4, column=0, columnspan=3, pady=20)
+
+    load_features()
+
+    root.mainloop()
+
+
+def browse_file():
+    from tkinter import filedialog
+    file_path = filedialog.askopenfilename()
+    file_path_entry.delete(0, tk.END)
+    file_path_entry.insert(0, file_path)
+    load_features(file_path)
+
+
+def load_features(file_path=None):
+    try:
+        normalized_file_path = file_path or "C:\\Users\\Kartik\\PycharmProjects\\ip_b_3\\normalisation result\\normalized_data.csv"
+        df = pd.read_csv(normalized_file_path)
+        features = df.columns[1:]  # Exclude the first column (assumed to be the index or ID column)
+        feature_combobox['values'] = features
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to load features: {str(e)}")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        initial_file_path = sys.argv[1]
+    else:
+        initial_file_path = "C:\\Users\\Kartik\\PycharmProjects\\ip_b_3\\normalisation result\\normalized_data.csv"
+    create_gui()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import tkinter as tk
+from tkinter import ttk, messagebox
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+import sys
+import subprocess
+
+def load_data(file_path):
+    df = pd.read_csv(file_path)
+    df = df.dropna()  # Drop rows with NaN values
+    return df
+
+def perform_pca(df):
+    df_scaled = StandardScaler().fit_transform(df)
+    pca = PCA(n_components=2)
+    principal_components = pca.fit_transform(df_scaled)
+    return principal_components, pca
+
+def plot_pca(df, principal_components, output_path):
+    plt.figure(figsize=(10, 7))
+    colors = df.index.to_series().astype(str).str.contains("cachexic").map({True: 'r', False: 'g'})
+    plt.scatter(principal_components[:, 0], principal_components[:, 1], c=colors)
+    plt.xlabel('Principal Component 1')
+    plt.ylabel('Principal Component 2')
+    plt.title('PCA - Normalized Data')
+    plt.savefig(output_path)
+    plt.close()
+
+def perform_roc_analysis(df, selected_feature):
+    from sklearn.metrics import roc_curve, auc
+
+    y_true = df['Muscle loss'].str.contains("cachexic").astype(int)
+    y_scores = df[selected_feature]
+
+    if y_true.sum() == 0 or y_true.sum() == len(y_true):
+        raise ValueError("No positive samples in y_true or no negative samples in y_true.")
+
+    fpr, tpr, thresholds = roc_curve(y_true, y_scores)
+    roc_auc = auc(fpr, tpr)
+    optimal_idx = np.argmax(tpr - fpr)
+    optimal_threshold = thresholds[optimal_idx]
+    return fpr, tpr, roc_auc, optimal_threshold, fpr[optimal_idx], tpr[optimal_idx]
+
+def plot_roc_and_box(df, selected_feature, output_path):
+    plt.figure(figsize=(14, 7))
+
+    ax1 = plt.subplot(121)
+    fpr, tpr, roc_auc, optimal_threshold, optimal_fpr, optimal_tpr = perform_roc_analysis(df, selected_feature)
+    ax1.plot(fpr, tpr, color='b', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+    ax1.plot([0, 1], [0, 1], color='gray', lw=2, linestyle='--')
+    ax1.scatter(optimal_fpr, optimal_tpr, color='red', s=100, label=f'Optimal Threshold ({optimal_threshold:.2f})')
+    ax1.set_xlabel('False Positive Rate')
+    ax1.set_ylabel('True Positive Rate')
+    ax1.set_title(f'Receiver Operating Characteristic (ROC) - {selected_feature}')
+    ax1.legend(loc='lower right')
+
+    ax2 = plt.subplot(122)
+    df['Group'] = np.where(df['Muscle loss'].str.contains("cachexic"), 'cachexic', 'control')
+    sns.boxplot(x='Group', y=selected_feature, data=df, ax=ax2)
+    sns.stripplot(x='Group', y=selected_feature, data=df, ax=ax2, color='black', jitter=0.2, size=3)
+    ax2.set_title(f'Boxplot - {selected_feature}')
+
+    plt.savefig(output_path)
+    plt.close()
+
+def analyze_and_plot_pca():
+    try:
+        df = load_data("C:\\Users\\Kartik\\PycharmProjects\\ip_b_3\\normalisation result\\normalized_data.csv")
+        df_numeric = df.select_dtypes(include=[np.number])  # Select only numeric columns
+        principal_components, pca = perform_pca(df_numeric)
+        output_path = "C:\\Users\\Kartik\\PycharmProjects\\ip_b_3\\biomarker_results\\pca_plot.png"
+        plot_pca(df, principal_components, output_path)
+        messagebox.showinfo("PCA Analysis", f"PCA plot saved to {output_path}")
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
+
+def analyze_and_plot_roc():
+    try:
+        selected_feature = feature_combobox.get()
+        df = load_data("C:\\Users\\Kartik\\PycharmProjects\\ip_b_3\\normalisation result\\normalized_data.csv")
+        output_path = f"C:\\Users\\Kartik\\PycharmProjects\\ip_b_3\\biomarker_results\\roc_{selected_feature}.png"
+        plot_roc_and_box(df, selected_feature, output_path)
+        messagebox.showinfo("ROC Analysis", f"ROC and box plot saved to {output_path}")
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
+
+def proceed_to_biomarker_2():
+    try:
+        subprocess.run(["python", "biomarker_2.py"])
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to launch biomarker_2.py: {str(e)}")
+
+def create_gui():
+    root = tk.Tk()
+    root.title("Biomarker Analysis")
+    root.geometry("600x400")
+
+    global feature_combobox
+
+    ttk.Label(root, text="Select Feature:").grid(row=0, column=0, padx=10, pady=10, sticky='w')
+    feature_combobox = ttk.Combobox(root)
+    feature_combobox.grid(row=0, column=1, padx=10, pady=10, sticky='w')
+
+    ttk.Button(root, text="Analyze and Plot PCA", command=analyze_and_plot_pca).grid(row=1, column=0, columnspan=3, pady=20)
+    ttk.Button(root, text="Analyze and Plot ROC", command=analyze_and_plot_roc).grid(row=2, column=0, columnspan=3, pady=20)
+    ttk.Button(root, text="Proceed to Biomarker 2", command=proceed_to_biomarker_2).grid(row=3, column=0, columnspan=3, pady=20)
+
+    load_features()
+
+    root.mainloop()
+
+def load_features():
+    try:
+        df = pd.read_csv("C:\\Users\\Kartik\\PycharmProjects\\ip_b_3\\normalisation result\\normalized_data.csv")
+        features = [feature.strip("'") for feature in df.columns[1:]]  # Exclude the first column (assumed to be the index or ID column)
+        feature_combobox['values'] = features
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to load features: {str(e)}")
+
+if __name__ == "__main__":
+    create_gui()
